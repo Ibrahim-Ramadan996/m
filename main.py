@@ -1,26 +1,10 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 import joblib
 import pandas as pd
-import os
-import re
-import unicodedata
 
-# دالة لتنظيف النص العربي والإنجليزي
-def normalize_text(text):
-    if not isinstance(text, str):
-        return ""
-    text = text.strip().lower()
-    # إزالة التشكيل من العربي
-    text = re.sub(r'[\u064B-\u0652]', '', text)
-    # إزالة رموز زي النقاط والعلامات
-    text = re.sub(r'[^\w\s]', '', text)
-    # إزالة التنوين والتشكيل، وتوحيد الألف
-    text = text.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ى', 'ي').replace('ئ', 'ي').replace('ة', 'ه')
-    return text
-
-# نموذج الرد
+# شكل البيانات الراجعة
 class NurseResponse(BaseModel):
     NurseID: int
     FName: str
@@ -36,39 +20,31 @@ class NurseResponse(BaseModel):
     Comment: str
     Score: float
 
-# نموذج الطلب
-class CityRequest(BaseModel):
-    city: str
-
 # إنشاء التطبيق
 app = FastAPI(title="نظام ترشيح الممرضين")
 
-# مفتاح API اختياري (احذفه لو مش محتاجه)
-API_KEY = os.getenv("API_KEY", "ak_2yRFbjP5NEgauepexZqPXkvNZ7E")
-def verify_api_key(x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="🚫 مفتاح API غير صحيح")
-
-@app.post("/nurses", response_model=List[NurseResponse])
-async def get_nurses_by_city(request: CityRequest, _: str = Depends(verify_api_key)):
+# استخدام GET واستقبال المدينة من الرابط
+@app.get("/nurses/{city}", response_model=List[NurseResponse])
+async def get_nurses_by_city(city: str):
     try:
-        # تحميل البيانات
+        # تحميل ملف البيانات
         df = joblib.load("nurse_data.pkl")
+
+        # تنظيف اسم المدينة
+        city_normalized = city.strip().lower()
         df = df[df['City'].notna()].copy()
+        df["City_clean"] = df["City"].astype(str).str.strip().str.lower()
 
-        # تنظيف العمود من الطرف
-        df["City_clean"] = df["City"].astype(str).apply(normalize_text)
-        city_normalized = normalize_text(request.city)
-
-        # الفلترة والترتيب
+        # فلترة البيانات على أساس المدينة
         filtered = df[df["City_clean"] == city_normalized].sort_values("AverageRating", ascending=False)
 
         if filtered.empty:
-            raise HTTPException(status_code=404, detail=f"❌ لا يوجد ممرضين في المدينة: {request.city}")
+            raise HTTPException(status_code=404, detail=f"❌ لا يوجد ممرضين في المدينة: {city}")
 
+        # تحويل النتيجة إلى JSON
         return filtered.drop(columns=["City_clean"]).to_dict("records")
 
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="⚠️ لم يتم العثور على ملف البيانات.")
+        raise HTTPException(status_code=500, detail="⚠️ ملف البيانات غير موجود.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"⚠️ خطأ داخلي في السيرفر: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"⚠️ خطأ داخلي: {str(e)}")
